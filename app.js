@@ -55,6 +55,8 @@ function init() {
   wireUrlInput();
   wireSettings();
   wirePreview();
+  wireKeyNotice();
+  updateKeyNoticeVisibility();
   $('#startOverBtn').addEventListener('click', resetToUpload);
   $('#cancelBtn').addEventListener('click', () => { state.cancelled = true; toast('Cancelling…'); });
   window.addEventListener('beforeunload', revokeAll);
@@ -80,6 +82,7 @@ function wireSettings() {
   keyInput.addEventListener('change', () => {
     const v = keyInput.value.trim();
     if (v) localStorage.setItem(LS_KEY, v); else localStorage.removeItem(LS_KEY);
+    updateKeyNoticeVisibility();
   });
   $('#toggleKeyBtn').addEventListener('click', () => {
     keyInput.type = keyInput.type === 'password' ? 'text' : 'password';
@@ -93,6 +96,7 @@ function wireSettings() {
     try {
       await validateKey(key);
       setKeyStatus('ok', '✓ Key works');
+      updateKeyNoticeVisibility();
     } catch (e) {
       setKeyStatus('err', e.message || 'Validation failed');
     }
@@ -135,6 +139,17 @@ function setKeyStatus(kind, msg) {
   el.textContent = msg;
 }
 
+function wireKeyNotice() {
+  $('#keyNoticeBtn').addEventListener('click', () => {
+    openModal($('#settingsModal'));
+  });
+}
+
+function updateKeyNoticeVisibility() {
+  const hasKey = Boolean(localStorage.getItem(LS_KEY));
+  $('#keyNotice').hidden = hasKey;
+}
+
 // ============================ UPLOAD ============================
 function wireUpload() {
   const dz = $('#dropzone');
@@ -164,11 +179,14 @@ function acceptFile(file) {
   const isMobile = matchMedia('(max-width: 640px)').matches || /Mobi|Android/i.test(navigator.userAgent);
 
   warn.hidden = true;
+  warn.classList.remove('soft');
   if (isMobile && file.size > MOBILE_CAP_BYTES) {
     warn.hidden = false;
+    warn.classList.add('soft');
     warn.textContent = `This file is ${sizeMB.toFixed(0)}MB. Files over 200MB often crash mobile browsers — try a smaller clip or use a desktop.`;
   } else if (sizeMB > 200) {
     warn.hidden = false;
+    warn.classList.add('soft');
     warn.textContent = `Heads up: ${sizeMB.toFixed(0)}MB is large. Processing may be slow and memory-heavy.`;
   }
 
