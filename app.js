@@ -2,15 +2,21 @@
 import { validateKey, transcribe, transcribeChunks, pickViralClips, buildTimestampedTranscript } from './groq-api.js';
 import * as FF from './ffmpeg-helper.js';
 import { buildASS } from './captions.js';
+import { BACKEND_URL, COLD_START_HINT_MS } from './config.js';
 
 // ---------------------------------------------------------------- state
 const LS_KEY = 'clipforge.apikey';
 const LS_SETTINGS = 'clipforge.settings';
 const WHISPER_MAX_BYTES = 25 * 1024 * 1024;
 const MOBILE_CAP_BYTES = 200 * 1024 * 1024;
+const MAX_BACKEND_SECONDS = 1800; // backend's 30-min hard cap
+const WARN_BACKEND_SECONDS = 1200; // warn frontend over 20 min
 
 const state = {
   file: null,
+  source: 'file',       // 'file' | 'url'
+  youtubeUrl: '',
+  videoInfo: null,      // { title, durationSeconds, thumbnail, author }
   videoDuration: 0,
   settings: loadSettings(),
   clips: [],            // results, each with objectURLs to revoke later
@@ -31,20 +37,22 @@ const screens = {
   results: $('#screen-results'),
 };
 
-const STAGES = [
+const PIPELINE_STAGES = [
   { id: 'audio', name: 'Extracting audio' },
   { id: 'transcribe', name: 'Transcribing speech' },
   { id: 'select', name: 'Finding viral moments' },
   { id: 'cut', name: 'Cutting clips' },
   { id: 'caption', name: 'Burning captions' },
 ];
+const DOWNLOAD_STAGE = { id: 'download', name: 'Downloading from YouTube' };
 
 // ---------------------------------------------------------------- init
 init();
 
 function init() {
-  buildStageList();
+  buildStageList(false);
   wireUpload();
+  wireUrlInput();
   wireSettings();
   wirePreview();
   $('#startOverBtn').addEventListener('click', resetToUpload);
@@ -143,7 +151,7 @@ function wireUpload() {
     if (f) acceptFile(f);
   });
 
-  $('#generateBtn').addEventListener('click', startPipeline);
+  $('#generateBtn').addEventListener('click', () => { state.source = 'file'; startPipeline(); });
 }
 
 function acceptFile(file) {
@@ -167,21 +175,199 @@ function acceptFile(file) {
   $('#uploadMeta').hidden = false;
   $('#uploadMeta').textContent = `${file.name} · ${sizeMB.toFixed(1)} MB`;
   $('#generateBtn').hidden = false;
+
+  // Choosing a file supersedes any pending YouTube selection.
+  $('#ytPreview').hidden = true;
+  state.source = 'file';
+}
+
+// ============================ YOUTUBE URL ============================
+function wireUrlInput() {
+  const form = $('#urlForm');
+  const input = $('#urlInput');
+  const findBtn = $('#findBtn');
+
+  // Without a configured backend the YouTube path can't work — degrade to
+  // file-upload-only and tell the user why.
+  if (!BACKEND_URL) {
+    input.disabled = true;
+    input.placeholder = 'YouTube loading not configured — upload a file below';
+    findBtn.disabled = true;
+    $('#pasteBtn').disabled = true;
+  }
+
+  $('#pasteBtn').addEventListener('click', async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) { input.value = text.trim(); input.focus(); }
+      else toast('Clipboard is empty.', 'err');
+    } catch {
+      toast('Clipboard blocked — paste manually with Ctrl/Cmd+V.', 'err');
+      input.focus();
+    }
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!BACKEND_URL) return;
+    const url = input.value.trim();
+    if (!url) { toast('Paste a YouTube URL first.', 'err'); return; }
+    if (!looksLikeYouTube(url)) { toast('That doesn’t look like a YouTube URL.', 'err'); return; }
+
+    setFindLoading(true);
+    try {
+      const info = await fetchVideoInfo(url);
+      state.youtubeUrl = url;
+      state.videoInfo = info;
+      showYtPreview(info);
+    } catch (err) {
+      showInfoError(err.message);
+    } finally {
+      setFindLoading(false);
+    }
+  });
+
+  $('#ytConfirmBtn').addEventListener('click', () => { state.source = 'url'; startPipeline(); });
+  $('#ytCancelBtn').addEventListener('click', () => {
+    $('#ytPreview').hidden = true;
+    $('#infoStatus').hidden = true;
+    input.focus();
+  });
+}
+
+function looksLikeYouTube(url) {
+  return /(?:youtube\.com\/(?:watch|shorts|live|embed)|youtu\.be\/)/i.test(url);
+}
+
+function setFindLoading(loading) {
+  const btn = $('#findBtn');
+  btn.disabled = loading;
+  $('#findBtnLabel').textContent = loading ? 'Loading…' : 'Find viral clips';
+}
+
+// Call POST /info. If it takes longer than COLD_START_HINT_MS, surface the
+// Render free-tier cold-start hint.
+async function fetchVideoInfo(url) {
+  const status = $('#infoStatus');
+  status.hidden = false;
+  status.className = 'info-status';
+  status.textContent = 'Fetching video details…';
+
+  const coldTimer = setTimeout(() => {
+    status.className = 'info-status cold';
+    status.textContent = 'Waking up the server… (free tier cold start, ~30s)';
+  }, COLD_START_HINT_MS);
+
+  try {
+    const res = await fetch(`${BACKEND_URL}/info`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Server error (${res.status})`);
+    return data;
+  } finally {
+    clearTimeout(coldTimer);
+  }
+}
+
+function showYtPreview(info) {
+  $('#infoStatus').hidden = true;
+  $('#ytThumb').src = info.thumbnail || '';
+  $('#ytTitle').textContent = info.title || 'Untitled video';
+  $('#ytAuthor').textContent = info.author || '';
+  $('#ytDuration').textContent = fmtDur(Number(info.durationSeconds) || 0);
+
+  const warn = $('#ytWarn');
+  const confirm = $('#ytConfirmBtn');
+  const dur = Number(info.durationSeconds) || 0;
+  if (dur > MAX_BACKEND_SECONDS) {
+    warn.hidden = false;
+    warn.textContent = 'This video is over 30 minutes — the server will reject it. Try a shorter one.';
+    confirm.disabled = true;
+  } else if (dur > WARN_BACKEND_SECONDS) {
+    warn.hidden = false;
+    warn.textContent = 'Over 20 minutes — downloading and processing will take a while.';
+    confirm.disabled = false;
+  } else {
+    warn.hidden = true;
+    confirm.disabled = false;
+  }
+  $('#ytPreview').hidden = false;
+}
+
+function showInfoError(msg) {
+  const status = $('#infoStatus');
+  status.hidden = false;
+  status.className = 'info-status err';
+  status.textContent = /Failed to fetch|NetworkError|ERR_|Load failed/i.test(msg || '')
+    ? 'Couldn’t reach the backend. Check that BACKEND_URL is set in config.js and the server is running.'
+    : (msg || 'Could not load that video.');
+}
+
+// Fetch /download and stream it into a File, reporting progress. Render's free
+// tier may not send Content-Length (chunked), so we degrade to a soft estimate.
+async function downloadFromBackend(url, onProgress) {
+  let res;
+  try {
+    res = await fetch(`${BACKEND_URL}/download?url=${encodeURIComponent(url)}`);
+  } catch {
+    throw new Error('Couldn’t reach the backend to download the video.');
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    if (res.status === 413) throw new Error('That video is over the 30-minute limit.');
+    throw new Error(text || `Download failed (${res.status}).`);
+  }
+
+  const total = Number(res.headers.get('Content-Length')) || 0;
+  const reader = res.body.getReader();
+  const chunks = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (state.cancelled) { try { await reader.cancel(); } catch {} throw new Error('__cancelled__'); }
+    chunks.push(value);
+    received += value.length;
+    const mb = (received / 1048576).toFixed(1);
+    if (total) {
+      onProgress(received / total, `${mb} / ${(total / 1048576).toFixed(1)} MB`);
+    } else {
+      // Soft asymptotic progress toward 90% when size is unknown.
+      onProgress(Math.min(0.9, received / (received + 8 * 1048576)), `${mb} MB`);
+    }
+  }
+  const blob = new Blob(chunks, { type: 'video/mp4' });
+  return new File([blob], 'video.mp4', { type: 'video/mp4' });
 }
 
 // ============================ PIPELINE ============================
 async function startPipeline() {
   const apiKey = (localStorage.getItem(LS_KEY) || '').trim();
   if (!apiKey) { toast('Add your Groq API key in Settings first.', 'err'); openModal($('#settingsModal')); return; }
-  if (!state.file) { toast('Choose a video first.', 'err'); return; }
+  const isUrl = state.source === 'url';
+  if (isUrl && !state.youtubeUrl) { toast('Paste a YouTube URL first.', 'err'); return; }
+  if (!isUrl && !state.file) { toast('Choose a video first.', 'err'); return; }
 
   state.cancelled = false;
+  buildStageList(isUrl);
   resetStages();
   showScreen('processing');
 
   try {
-    // Probe duration via a throwaway <video> element.
-    state.videoDuration = await probeDuration(state.file);
+    // ---- stage: download from YouTube (URL source only) ----
+    if (isUrl) {
+      setStage('download', 'active', 'Requesting video from server…');
+      const file = await downloadFromBackend(state.youtubeUrl, (p, msg) => setStageProgress('download', p, msg));
+      state.file = file;
+      setStage('download', 'done', `${(file.size / 1048576).toFixed(1)} MB downloaded`);
+      checkCancel();
+    }
+
+    // Probe duration via a throwaway <video>; fall back to YouTube metadata.
+    state.videoDuration = (await probeDuration(state.file)) || Number(state.videoInfo?.durationSeconds) || 0;
 
     // ---- stage 0: load ffmpeg + write input + extract audio ----
     setStage('audio', 'active', 'Loading FFmpeg.wasm…');
@@ -314,9 +500,10 @@ function aspectDims(aspect) {
 }
 
 // ============================ STAGE UI ============================
-function buildStageList() {
+function buildStageList(includeDownload) {
   const ul = $('#stageList');
-  ul.innerHTML = STAGES.map((s) => `
+  const stages = includeDownload ? [DOWNLOAD_STAGE, ...PIPELINE_STAGES] : PIPELINE_STAGES;
+  ul.innerHTML = stages.map((s) => `
     <li class="stage" data-stage="${s.id}">
       <span class="stage-icon" aria-hidden="true">${stageIcon(s.id)}</span>
       <span class="stage-body">
@@ -465,7 +652,16 @@ function resetToUpload() {
   closePreview();
   revokeAll();
   state.clips = [];
+  state.file = null;
+  state.source = 'file';
+  state.youtubeUrl = '';
+  state.videoInfo = null;
   $('#clipGrid').innerHTML = '';
+  $('#ytPreview').hidden = true;
+  $('#infoStatus').hidden = true;
+  $('#generateBtn').hidden = true;
+  $('#uploadMeta').hidden = true;
+  $('#uploadWarning').hidden = true;
   showScreen('upload');
 }
 

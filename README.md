@@ -1,13 +1,19 @@
 # ClipForge — browser-based viral clip generator
 
 Turn a long video (podcast, interview, vlog) into short, vertical, caption-burned
-clips — entirely in the browser. AI finds the most viral moments, cuts them to
-15–60s, reframes to 9:16, and burns in TikTok-style auto-captions.
+clips — entirely in the browser. Paste a **YouTube URL** (or upload a file), and
+AI finds the most viral moments, cuts them to 15–60s, reframes to 9:16, and burns
+in TikTok-style auto-captions.
 
 No frameworks, no build step. Pure HTML/CSS/vanilla JS, deployable to GitHub Pages.
+A tiny companion backend (`clipper-ai-backend/`, deployable to Render) fetches
+YouTube videos, since the browser can't download them directly (CORS + ToS).
 
 ## How it works
 
+0. **(YouTube only) Download** — the frontend asks the backend for video metadata
+   (`POST /info`) to show a preview card, then streams the MP4 (`GET /download`)
+   into FFmpeg.wasm. File uploads skip this step entirely.
 1. **Extract audio** — FFmpeg.wasm pulls a compressed mono 16 kHz / 64 kbps MP3
    (kept under Groq Whisper's 25 MB limit; auto-chunked if a video is long enough
    to exceed it).
@@ -27,7 +33,22 @@ Everything runs client-side. The only network calls are to the Groq API with
 1. Get a free Groq API key at <https://console.groq.com/keys>.
 2. Open the app, click the gear icon, paste your key, and hit **Validate key**
    (this does a tiny hello-world Llama call to confirm it works).
-3. Drop a video, pick your settings, and **Generate viral clips**.
+3. Either **paste a YouTube URL** and hit *Find viral clips*, or drag-and-drop a
+   video file. Pick your settings and go.
+
+### Backend (for YouTube URLs)
+
+YouTube loading needs the companion backend. See
+[`clipper-ai-backend/README.md`](clipper-ai-backend/README.md) to run it locally
+or deploy it to Render's free tier, then set its URL in `config.js`:
+
+```js
+// config.js
+export const BACKEND_URL = "https://clipper-ai-backend.onrender.com"; // your Render URL
+```
+
+If `BACKEND_URL` is left blank, the YouTube field is disabled and the app falls
+back to file upload only.
 
 ### Run locally
 
@@ -73,17 +94,30 @@ electric blue (`#0066FF`).
 - **Reframing is a center crop (v1).** Real face-tracking reframing would be a v2
   upgrade using [MediaPipe](https://developers.google.com/mediapipe) face
   detection to keep the speaker centered instead of a static center crop.
+- **YouTube downloads go through the backend.** The browser can't fetch YouTube
+  directly. The backend caps videos at 30 min; the frontend warns over 20 min.
+- **Render free tier sleeps** after ~15 min idle; the first `/info` after sleep
+  triggers a "Waking up the server…" hint while it cold-starts (~30s).
+- **CORS.** The backend is open by default; set `ALLOWED_ORIGIN` on Render to
+  your GitHub Pages origin to lock it down.
 
 ## File structure
 
 ```
-index.html            shell with all screen sections + importmap for FFmpeg.wasm
+index.html            shell with all screen sections (YouTube URL + file upload)
 styles.css            theme (CSS custom properties), glassmorphism, animations
-app.js                orchestrator + state machine
+app.js                orchestrator + state machine (YouTube + file pipelines)
+config.js             BACKEND_URL constant + cold-start timing
 ffmpeg-helper.js      wraps FFmpeg.wasm: load, extract audio, cut, reframe, caption, thumbnail
 groq-api.js           Whisper transcription + Llama clip selection
 captions.js           ASS subtitle generator from word timestamps
 coi-serviceworker.js  enables SharedArrayBuffer (cross-origin isolation) on GitHub Pages
+
+clipper-ai-backend/   companion Node.js service (deploy separately to Render)
+  server.js             Express: /health, /info, /download (@distube/ytdl-core)
+  package.json          ESM, deps: express, cors, @distube/ytdl-core
+  .gitignore
+  README.md             local run + Render deploy instructions
 ```
 
 ## Tech
