@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <!-- coi-serviceworker MUST be the very first script: it enables cross-origin
+       isolation (COOP/COEP) on GitHub Pages so SharedArrayBuffer / FFmpeg.wasm work. -->
+  <script src="coi-serviceworker.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0A0A0F" />
+  <title>ClipForge — Viral Clip Generator</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2l2.4 6.1L20.5 10l-6.1 2.4L12 18.5 9.6 12.4 3.5 10l6.1-1.9L12 2z' fill='%23FF1B6B'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://unpkg.com" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- ============================ APP HEADER ============================ -->
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15.5 10.1 10.9 5.5 9l4.6-1.4L12 3z"/>
+        </svg>
+      </span>
+      <span class="brand-name">ClipForge</span>
+    </div>
+    <button id="settingsBtn" class="icon-btn" aria-label="Settings" title="Settings">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+  </header>
+
+  <main id="app">
+    <!-- ============================ UPLOAD SCREEN ============================ -->
+    <section id="screen-upload" class="screen is-active">
+      <div class="hero">
+        <h1 class="hero-title">Turn long videos into <span class="grad">viral clips</span></h1>
+        <p class="hero-sub">Drop a podcast, interview or vlog. AI finds the best moments, cuts them to vertical, and burns in TikTok-style captions — all in your browser.</p>
+      </div>
+
+      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload a video">
+        <input id="fileInput" type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" hidden />
+        <span class="dz-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M5 20h14"/>
+          </svg>
+        </span>
+        <p class="dz-title">Drag &amp; drop your video</p>
+        <p class="dz-hint">or <span class="dz-link">browse files</span> — MP4, MOV or WebM</p>
+      </div>
+
+      <p id="uploadWarning" class="warn-banner" hidden></p>
+
+      <button id="generateBtn" class="pill-btn primary" hidden>
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15.5 10.1 10.9 5.5 9l4.6-1.4L12 3z"/>
+        </svg>
+        <span id="generateBtnLabel">Generate viral clips</span>
+      </button>
+
+      <p class="upload-meta" id="uploadMeta" hidden></p>
+    </section>
+
+    <!-- ============================ PROCESSING SCREEN ============================ -->
+    <section id="screen-processing" class="screen">
+      <div class="processing-wrap">
+        <div class="sparkle-loader" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </div>
+        <h2 class="proc-title">Forging your clips</h2>
+        <p class="proc-note">A 10-minute video can take 3–5 minutes. Keep this tab open.</p>
+
+        <ul id="stageList" class="stage-list">
+          <!-- stages injected by app.js -->
+        </ul>
+
+        <button id="cancelBtn" class="pill-btn ghost">Cancel</button>
+      </div>
+    </section>
+
+    <!-- ============================ RESULTS SCREEN ============================ -->
+    <section id="screen-results" class="screen">
+      <div class="results-head">
+        <div>
+          <h2 class="results-title">Your viral clips</h2>
+          <p id="resultsSub" class="results-sub"></p>
+        </div>
+        <button id="startOverBtn" class="pill-btn ghost">New video</button>
+      </div>
+      <div id="clipGrid" class="clip-grid"><!-- clip cards injected --></div>
+    </section>
+  </main>
+
+  <!-- ============================ SETTINGS MODAL ============================ -->
+  <div id="settingsModal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card glass" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="modal-head">
+        <h3 id="settingsTitle">Settings</h3>
+        <button class="icon-btn" data-close-modal aria-label="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <label class="field-label" for="apiKeyInput">Groq API key</label>
+      <div class="key-row">
+        <input id="apiKeyInput" type="password" class="text-input" placeholder="gsk_..." autocomplete="off" spellcheck="false" />
+        <button id="toggleKeyBtn" class="icon-btn" type="button" aria-label="Show key" title="Show / hide">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+      <div class="key-actions">
+        <button id="validateKeyBtn" class="pill-btn small">Validate key</button>
+        <span id="keyStatus" class="key-status"></span>
+      </div>
+      <p class="field-hint">Get a free key at <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a>. Stored only in your browser's localStorage.</p>
+
+      <div class="divider"></div>
+
+      <label class="field-label">Aspect ratio</label>
+      <div id="aspectToggle" class="seg-toggle" role="radiogroup" aria-label="Aspect ratio">
+        <button class="seg" data-aspect="9:16" aria-pressed="true">9:16</button>
+        <button class="seg" data-aspect="1:1" aria-pressed="false">1:1</button>
+        <button class="seg" data-aspect="16:9" aria-pressed="false">16:9</button>
+      </div>
+
+      <div class="row-between">
+        <label class="field-label" for="captionsToggle">Burn-in captions</label>
+        <label class="switch">
+          <input id="captionsToggle" type="checkbox" checked />
+          <span class="switch-track"></span>
+        </label>
+      </div>
+
+      <label class="field-label" for="clipCount">Number of clips: <span id="clipCountVal">5</span></label>
+      <input id="clipCount" class="slider" type="range" min="3" max="10" value="5" step="1" />
+
+      <button class="pill-btn primary full" data-close-modal>Done</button>
+    </div>
+  </div>
+
+  <!-- ============================ PREVIEW MODAL ============================ -->
+  <div id="previewModal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-preview></div>
+    <div class="preview-card">
+      <button class="icon-btn preview-close" data-close-preview aria-label="Close">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+      <video id="previewVideo" controls playsinline></video>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
